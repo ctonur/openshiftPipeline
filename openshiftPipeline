@@ -1,0 +1,321 @@
+
+
+def PROJECT_NAME = 'xxxx-common'
+
+ 
+
+ 
+
+properties([
+
+    parameters([
+
+        gitParameter(branch: '',
+
+                     branchFilter: 'origin/(.*)',
+
+                     defaultValue: 'master',
+
+                     description: '',
+
+                     name: 'BRANCH',
+
+                     quickFilterEnabled: false,
+
+                     selectedValue: 'NONE',
+
+                     sortMode: 'NONE',
+
+                     tagFilter: '*',
+
+                     type: 'PT_BRANCH')
+
+    ])
+
+])
+
+ 
+
+node('maven') {
+
+ 
+
+    withMaven(mavenSettingsConfig: 'dev-settings-xml') {
+
+       
+
+        stage('Checkout Repository') {
+
+           
+
+            def REPOSITORY_URL = 'https://tfs.xxxx.com/'
+
+           
+
+            sh  "git config --global http.sslVerify false" //temporarily solution, should change (cert should add)
+
+           
+
+            def Input = input message: '', parameters: [gitParameter(branch: '', branchFilter: '.*', defaultValue: 'master', description: '', name: 'BRANCH', quickFilterEnabled: false, selectedValue: 'NONE', sortMode: 'NONE', tagFilter: '*', type: 'PT_BRANCH')]
+
+ 
+
+            git([url: REPOSITORY_URL , branch: Input  , credentialsId: 'tfs-puller'])
+
+           
+
+            echo "Repository cloned"
+
+       
+
+            if(Input == 'master')
+
+                FEATURE_NAME =  ''
+
+            else
+
+                FEATURE_NAME = '-'+ Input + ''
+
+         
+
+            
+
+        }
+
+       
+
+        
+
+        stage('Maven build') {
+
+               
+
+                sh "mvn clean install"
+
+              
+
+                echo "Maven build completed"
+
+       
+
+        }
+
+       
+
+        dir('s2i'){
+
+           
+
+            stage('Prep for S2I'){
+
+               
+
+                sh 'mkdir deployments && mkdir configuration && mkdir modules'
+
+               
+
+                sh 'cp $WORKSPACE/cicseci.rar $WORKSPACE/wmq.jmsra.rar deployments/.'
+
+               
+
+                sh 'cp -R $WORKSPACE/BSAEAR/target/* deployments/.'
+
+           
+
+                sh 'cp $WORKSPACE/standalone.xml configuration/standalone.xml'
+
+               
+
+                echo "Folder structrue prepared for S2I"
+
+               
+
+            }
+
+           
+
+            dir('modules'){
+
+   
+
+                stage('Checkout Modules') {
+
+    
+
+                    git([url: 'https://tfs.xxxxxxxxx/DefaultCollection/BSA/_git/jbossmodules', branch: 'master', credentialsId: 'tfs-puller'])
+
+                 
+
+                    echo "Modules cloned"
+
+                }
+
+            }
+
+           
+
+            
+
+            stage('S2I Build') {
+
+               
+
+                openshift.withCluster() {
+
+                   
+
+                    openshift.withProject( "bsa-dev" ){
+
+               
+
+                        def selector = openshift.selector( "dc/xxxx-common${FEATURE_NAME}")
+
+                       
+
+                        def Exists = selector.exists()
+
+               
+
+                        if (Exists) {
+
+                           
+
+                          echo "Feature -> $FEATURE_NAME is exist"
+
+                         
+
+                          echo "Build is starting..."
+
+                         
+
+                          openshift.startBuild("xxxx-common${FEATURE_NAME}" , '--from-dir .').logs('-f')
+
+                    
+
+                        }
+
+                        else {
+
+                           
+
+                            echo "Feature -> $FEATURE_NAME is not exist"
+
+                           
+
+                            configFileProvider([configFile(fileId: 'project-deployment-config', variable: 'DEPLOYMENT_CONFIG'), configFile(fileId: 'project-image-stream', variable: 'IMAGE_STREAM'), configFile(fileId: 'project-route', variable: 'ROUTE'), configFile(fileId: 'project-s2i-build', variable: 'BUILD_CONFIG'), configFile(fileId: 'project-service', variable: 'SERVICE')]) {
+
+                           
+
+                            echo "Resources creating..."
+
+                            
+
+                            createResource("${DEPLOYMENT_CONFIG}","akrobat-common","${FEATURE_NAME}")
+
+                           
+
+                            createResource("${BUILD_CONFIG}",PROJECT_NAME,FEATURE_NAME)
+
+                           
+
+                            createResource("${IMAGE_STREAM}",PROJECT_NAME,FEATURE_NAME)
+
+                           
+
+                            createResource("${SERVICE}",PROJECT_NAME,FEATURE_NAME)
+
+                           
+
+                            createResource("${ROUTE}",PROJECT_NAME,FEATURE_NAME)
+
+                           
+
+                            echo "Resources created"
+
+                           
+
+                            echo "Copying env variables from original deployment"
+
+                            
+
+                            def envs = openshift.selector( "bc/xxxx-common").object().spec.strategy.sourceStrategy.env
+
+   
+
+                            def bc = openshift.selector( "bc/xxxx-common${FEATURE_NAME}").object()
+
+ 
+
+                            bc.spec.strategy.sourceStrategy.env = envs
+
+                           
+
+                            openshift.apply(bc)
+
+                           
+
+                            echo "Env variables injected"
+
+                           
+
+                            echo "Build starting ..."
+
+ 
+
+                            openshift.startBuild("xxxx-common${FEATURE_NAME}" , '--from-dir .').logs('-f')
+
+                          
+
+                        }
+
+                    }
+
+                 
+
+                }
+
+                }
+
+            }
+
+        }   
+
+            
+
+    }
+
+       
+
+}
+
+ 
+
+ 
+
+def createResource(conf,PROJECT_NAME,FEATURE_NAME) {
+
+   
+
+    sh "sed -i 's/{PROJECT_NAME}/"+PROJECT_NAME+"/g' "+conf
+
+   
+
+    sh "sed -i 's/{Feature}/"+FEATURE_NAME+"/g' "+conf
+
+   
+
+    def resource = readFile conf
+
+ 
+
+    openshift.create(resource)
+
+   
+
+}
+
+
+
+
+
+
